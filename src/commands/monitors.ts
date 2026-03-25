@@ -40,6 +40,7 @@ const MONITOR_TYPES = [
   "mongodb",
   "radius",
   "redis",
+  "unifi",
 ];
 
 export function monitorsCommand(program: Command): void {
@@ -249,8 +250,10 @@ ${chalk.dim("Examples:")}
     .command("add")
     .description("Add a new monitor — runs interactively if flags are omitted")
     .option("--name <name>", "Display name for the monitor")
-    .option("--type <type>", "Monitor type: http, tcp, ping, dns, push, steam, ...")
+    .option("--type <type>", "Monitor type: http, tcp, ping, dns, push, steam, unifi, ...")
     .option("--url <url>", "URL (http), hostname:port (tcp), or hostname (ping/dns)")
+    .option("--hostname <hostname>", "Hostname or MAC address (for ping, dns, unifi types)")
+    .option("--api-key <key>", "API key (for unifi type — UniFi Site Manager API key)")
     .option("--interval <seconds>", "How often to check, in seconds (default: 60)", "60")
     .option("--json", "Output as JSON ({ ok, data })")
     .addHelpText(
@@ -268,6 +271,8 @@ ${chalk.dim("Examples:")}
         name?: string;
         type?: string;
         url?: string;
+        hostname?: string;
+        apiKey?: string;
         interval?: string;
         json?: boolean;
       }) => {
@@ -291,7 +296,7 @@ ${chalk.dim("Examples:")}
                   },
                 ]
               : []),
-            ...(!opts.url
+            ...(!opts.url && !opts.hostname
               ? [
                   {
                     type: "input",
@@ -307,11 +312,20 @@ ${chalk.dim("Examples:")}
           const url = opts.url ?? answers.url;
           const interval = parseInt(opts.interval ?? "60", 10);
 
+          const monitorPayload: Record<string, any> = { name, type, url, interval };
+          if (opts.hostname) {
+            monitorPayload.hostname = opts.hostname;
+          }
+          if (type === "unifi" && opts.apiKey) {
+            monitorPayload.basic_auth_pass = opts.apiKey;
+            monitorPayload.timeout = 30;
+          }
+
           const client = await createAuthenticatedClient(
             config!.url,
             config!.token
           );
-          const result = await client.addMonitor({ name, type, url, interval });
+          const result = await client.addMonitor(monitorPayload);
           client.disconnect();
 
           if (json) {
@@ -330,8 +344,10 @@ ${chalk.dim("Examples:")}
     .command("create")
     .description("Create a monitor non-interactively — designed for CI/CD pipelines")
     .requiredOption("--name <name>", "Monitor display name")
-    .requiredOption("--type <type>", "Monitor type: http, tcp, ping, dns, push, ...")
+    .requiredOption("--type <type>", "Monitor type: http, tcp, ping, dns, push, unifi, ...")
     .option("--url <url>", "URL or hostname to monitor")
+    .option("--hostname <hostname>", "Hostname or MAC address (for ping, dns, unifi types)")
+    .option("--api-key <key>", "API key (for unifi type — UniFi Site Manager API key)")
     .option("--interval <seconds>", "Check interval in seconds (default: 60)", "60")
     .option("--tag <tag>", "Assign a tag by name (repeatable — must already exist in Kuma)", collect, [])
     .option("--notification-id <id>", "Assign a notification channel by ID (repeatable)", collectInt, [])
@@ -344,6 +360,7 @@ ${chalk.dim("Examples:")}
   ${chalk.cyan("kuma monitors create --type http --name \"My API\" --url https://api.example.com --tag Production --tag BlackAsteroid")}
   ${chalk.cyan("kuma monitors create --type push --name \"GH Runner\" --json | jq '.data.pushToken'")}
   ${chalk.cyan("kuma monitors create --type tcp --name \"DB\" --url db.host:5432 --interval 30 --notification-id 1")}
+  ${chalk.cyan("kuma monitors create --type unifi --name \"Firewall\" --hostname AA:BB:CC:DD:EE:FF --api-key <key> --interval 120")}
 
 ${chalk.dim("Full pipeline (deploy → monitor → heartbeat):")}
   ${chalk.cyan("RESULT=\$(kuma monitors create --type push --name \"runner\" --json)")}
@@ -355,6 +372,8 @@ ${chalk.dim("Full pipeline (deploy → monitor → heartbeat):")}
       name: string;
       type: string;
       url?: string;
+      hostname?: string;
+      apiKey?: string;
       interval?: string;
       tag: string[];
       notificationId: number[];
@@ -367,20 +386,47 @@ ${chalk.dim("Full pipeline (deploy → monitor → heartbeat):")}
       const interval = parseInt(opts.interval ?? "60", 10);
 
       // Validate required fields per type
-      if (["http", "keyword", "tcp", "ping", "dns"].includes(opts.type) && !opts.url) {
+      if (["http", "keyword", "tcp"].includes(opts.type) && !opts.url) {
         handleError(new Error(`--url is required for monitor type "${opts.type}"`), opts);
+      }
+      if (["ping", "dns"].includes(opts.type) && !opts.url && !opts.hostname) {
+        handleError(new Error(`--url or --hostname is required for monitor type "${opts.type}"`), opts);
+      }
+      if (opts.type === "unifi" && !opts.hostname) {
+        handleError(new Error("--hostname (device MAC address) is required for unifi monitor type"), opts);
+      }
+      if (opts.type === "unifi" && !opts.apiKey) {
+        handleError(new Error("--api-key (UniFi Site Manager API key) is required for unifi monitor type"), opts);
       }
 
       try {
         const client = await createAuthenticatedClient(config!.url, config!.token);
 
-        // Create the monitor
-        const result = await client.addMonitor({
+        // Build monitor payload
+        const monitorPayload: Record<string, any> = {
           name: opts.name,
           type: opts.type,
           url: opts.url,
           interval,
-        });
+        };
+
+        // For types that use hostname instead of url
+        if (opts.hostname) {
+          monitorPayload.hostname = opts.hostname;
+        }
+        // For ping/dns: --url is used as hostname if --hostname not provided
+        if (["ping", "dns"].includes(opts.type) && !opts.hostname && opts.url) {
+          monitorPayload.hostname = opts.url;
+        }
+
+        // UniFi-specific: map --api-key to basic_auth_pass
+        if (opts.type === "unifi" && opts.apiKey) {
+          monitorPayload.basic_auth_pass = opts.apiKey;
+          monitorPayload.timeout = 30;
+        }
+
+        // Create the monitor
+        const result = await client.addMonitor(monitorPayload);
         const monitorId = result.id;
         // pushToken is returned directly from addMonitor for push monitors
         // (auto-generated in the client before sending to Kuma)

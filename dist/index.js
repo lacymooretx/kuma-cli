@@ -30351,11 +30351,12 @@ var { prompt } = import_enquirer.default;
 function loginCommand(program3) {
   program3.command("login <url>").description(
     "Authenticate with an Uptime Kuma instance and save the session token locally"
-  ).option("--json", "Output as JSON ({ ok, data })").addHelpText(
+  ).option("--json", "Output as JSON ({ ok, data })").option("--username <username>", "Username (non-interactive)").option("--password <password>", "Password (non-interactive)").addHelpText(
     "after",
     `
 ${source_default.dim("Examples:")}
   ${source_default.cyan("kuma login https://kuma.example.com")}
+  ${source_default.cyan("kuma login https://kuma.example.com --username admin --password secret")}
   ${source_default.cyan("kuma login https://kuma.example.com --json")}
 
 ${source_default.dim("Notes:")}
@@ -30377,19 +30378,19 @@ ${source_default.dim("Notes:")}
           ));
         }
       }
-      const answers = await prompt([
-        {
-          type: "input",
-          name: "username",
-          message: "Username:"
-        },
-        {
-          type: "password",
-          name: "password",
-          message: "Password:"
-        }
-      ]);
-      const { username, password } = answers;
+      let username;
+      let password;
+      if (opts.username && opts.password) {
+        username = opts.username;
+        password = opts.password;
+      } else {
+        const answers = await prompt([
+          ...!opts.username ? [{ type: "input", name: "username", message: "Username:" }] : [],
+          ...!opts.password ? [{ type: "password", name: "password", message: "Password:" }] : []
+        ]);
+        username = opts.username ?? answers.username;
+        password = opts.password ?? answers.password;
+      }
       const client = new KumaClient(normalizedUrl);
       await client.connect();
       const result = await client.login(username, password);
@@ -30462,7 +30463,8 @@ var MONITOR_TYPES = [
   "mysql",
   "mongodb",
   "radius",
-  "redis"
+  "redis",
+  "unifi"
 ];
 function monitorsCommand(program3) {
   const monitors = program3.command("monitors").description("Create, view, update, pause, resume, and delete monitors").addHelpText(
@@ -30608,7 +30610,7 @@ ${list.length} monitor(s) total`);
       }
     }
   );
-  monitors.command("add").description("Add a new monitor \u2014 runs interactively if flags are omitted").option("--name <name>", "Display name for the monitor").option("--type <type>", "Monitor type: http, tcp, ping, dns, push, steam, ...").option("--url <url>", "URL (http), hostname:port (tcp), or hostname (ping/dns)").option("--interval <seconds>", "How often to check, in seconds (default: 60)", "60").option("--json", "Output as JSON ({ ok, data })").addHelpText(
+  monitors.command("add").description("Add a new monitor \u2014 runs interactively if flags are omitted").option("--name <name>", "Display name for the monitor").option("--type <type>", "Monitor type: http, tcp, ping, dns, push, steam, unifi, ...").option("--url <url>", "URL (http), hostname:port (tcp), or hostname (ping/dns)").option("--hostname <hostname>", "Hostname or MAC address (for ping, dns, unifi types)").option("--api-key <key>", "API key (for unifi type \u2014 UniFi Site Manager API key)").option("--interval <seconds>", "How often to check, in seconds (default: 60)", "60").option("--json", "Output as JSON ({ ok, data })").addHelpText(
     "after",
     `
 ${source_default.dim("Examples:")}
@@ -30633,7 +30635,7 @@ ${source_default.dim("Examples:")}
               choices: MONITOR_TYPES
             }
           ] : [],
-          ...!opts.url ? [
+          ...!opts.url && !opts.hostname ? [
             {
               type: "input",
               name: "url",
@@ -30645,11 +30647,19 @@ ${source_default.dim("Examples:")}
         const type2 = opts.type ?? answers.type;
         const url2 = opts.url ?? answers.url;
         const interval = parseInt(opts.interval ?? "60", 10);
+        const monitorPayload = { name, type: type2, url: url2, interval };
+        if (opts.hostname) {
+          monitorPayload.hostname = opts.hostname;
+        }
+        if (type2 === "unifi" && opts.apiKey) {
+          monitorPayload.basic_auth_pass = opts.apiKey;
+          monitorPayload.timeout = 30;
+        }
         const client = await createAuthenticatedClient(
           config.url,
           config.token
         );
-        const result = await client.addMonitor({ name, type: type2, url: url2, interval });
+        const result = await client.addMonitor(monitorPayload);
         client.disconnect();
         if (json2) {
           jsonOut({ id: result.id, name, type: type2, url: url2, interval });
@@ -30660,7 +30670,7 @@ ${source_default.dim("Examples:")}
       }
     }
   );
-  monitors.command("create").description("Create a monitor non-interactively \u2014 designed for CI/CD pipelines").requiredOption("--name <name>", "Monitor display name").requiredOption("--type <type>", "Monitor type: http, tcp, ping, dns, push, ...").option("--url <url>", "URL or hostname to monitor").option("--interval <seconds>", "Check interval in seconds (default: 60)", "60").option("--tag <tag>", "Assign a tag by name (repeatable \u2014 must already exist in Kuma)", collect, []).option("--notification-id <id>", "Assign a notification channel by ID (repeatable)", collectInt, []).option("--json", "Output as JSON ({ ok, data }) \u2014 prints monitor ID and pushToken to stdout").addHelpText(
+  monitors.command("create").description("Create a monitor non-interactively \u2014 designed for CI/CD pipelines").requiredOption("--name <name>", "Monitor display name").requiredOption("--type <type>", "Monitor type: http, tcp, ping, dns, push, unifi, ...").option("--url <url>", "URL or hostname to monitor").option("--hostname <hostname>", "Hostname or MAC address (for ping, dns, unifi types)").option("--api-key <key>", "API key (for unifi type \u2014 UniFi Site Manager API key)").option("--interval <seconds>", "Check interval in seconds (default: 60)", "60").option("--tag <tag>", "Assign a tag by name (repeatable \u2014 must already exist in Kuma)", collect, []).option("--notification-id <id>", "Assign a notification channel by ID (repeatable)", collectInt, []).option("--json", "Output as JSON ({ ok, data }) \u2014 prints monitor ID and pushToken to stdout").addHelpText(
     "after",
     `
 ${source_default.dim("Examples:")}
@@ -30668,6 +30678,7 @@ ${source_default.dim("Examples:")}
   ${source_default.cyan('kuma monitors create --type http --name "My API" --url https://api.example.com --tag Production --tag BlackAsteroid')}
   ${source_default.cyan(`kuma monitors create --type push --name "GH Runner" --json | jq '.data.pushToken'`)}
   ${source_default.cyan('kuma monitors create --type tcp --name "DB" --url db.host:5432 --interval 30 --notification-id 1')}
+  ${source_default.cyan('kuma monitors create --type unifi --name "Firewall" --hostname AA:BB:CC:DD:EE:FF --api-key <key> --interval 120')}
 
 ${source_default.dim("Full pipeline (deploy \u2192 monitor \u2192 heartbeat):")}
   ${source_default.cyan('RESULT=$(kuma monitors create --type push --name "runner" --json)')}
@@ -30679,17 +30690,37 @@ ${source_default.dim("Full pipeline (deploy \u2192 monitor \u2192 heartbeat):")}
     if (!config) requireAuth(opts);
     const json2 = isJsonMode(opts);
     const interval = parseInt(opts.interval ?? "60", 10);
-    if (["http", "keyword", "tcp", "ping", "dns"].includes(opts.type) && !opts.url) {
+    if (["http", "keyword", "tcp"].includes(opts.type) && !opts.url) {
       handleError(new Error(`--url is required for monitor type "${opts.type}"`), opts);
+    }
+    if (["ping", "dns"].includes(opts.type) && !opts.url && !opts.hostname) {
+      handleError(new Error(`--url or --hostname is required for monitor type "${opts.type}"`), opts);
+    }
+    if (opts.type === "unifi" && !opts.hostname) {
+      handleError(new Error("--hostname (device MAC address) is required for unifi monitor type"), opts);
+    }
+    if (opts.type === "unifi" && !opts.apiKey) {
+      handleError(new Error("--api-key (UniFi Site Manager API key) is required for unifi monitor type"), opts);
     }
     try {
       const client = await createAuthenticatedClient(config.url, config.token);
-      const result = await client.addMonitor({
+      const monitorPayload = {
         name: opts.name,
         type: opts.type,
         url: opts.url,
         interval
-      });
+      };
+      if (opts.hostname) {
+        monitorPayload.hostname = opts.hostname;
+      }
+      if (["ping", "dns"].includes(opts.type) && !opts.hostname && opts.url) {
+        monitorPayload.hostname = opts.url;
+      }
+      if (opts.type === "unifi" && opts.apiKey) {
+        monitorPayload.basic_auth_pass = opts.apiKey;
+        monitorPayload.timeout = 30;
+      }
+      const result = await client.addMonitor(monitorPayload);
       const monitorId = result.id;
       let pushToken = result.pushToken ?? null;
       const tagWarnings = [];
@@ -34254,6 +34285,14 @@ var jsYaml = {
 };
 
 // src/commands/config.ts
+var FORBIDDEN_NOTIFICATION_FIELDS = /* @__PURE__ */ new Set([
+  "__proto__",
+  "constructor",
+  "prototype",
+  // Kuma internal columns that shouldn't be overridden via config blob
+  "id",
+  "user_id"
+]);
 function configCommand(program3) {
   const cfg = program3.command("config").description("Export and import Kuma configuration");
   cfg.command("export").description("Export monitors and notifications to a file").option("--tag <tag>", "Export only monitors with this tag").option("--output <file>", "Output file path (JSON or YAML) or '-' for stdout", "-").option("--json", "Output as JSON ({ ok, data })").action(async (opts) => {
@@ -34385,7 +34424,15 @@ function configCommand(program3) {
                 parsedConfig = JSON.parse(n.config);
               } catch {
               }
-              await client.addNotification({ ...parsedConfig, name: n.name, type: parsedConfig.type || n.type }, existing.id);
+              const safeConfig = {};
+              for (const [k, v] of Object.entries(parsedConfig)) {
+                if (FORBIDDEN_NOTIFICATION_FIELDS.has(k) || k.startsWith("__")) {
+                  if (!json2) console.warn(source_default.yellow(`\u26A0\uFE0F  Ignored forbidden notification field: ${k}`));
+                } else {
+                  safeConfig[k] = v;
+                }
+              }
+              await client.addNotification({ ...safeConfig, name: n.name, type: safeConfig.type || n.type }, existing.id);
             }
           } else {
             skippedNotifCount++;
@@ -34398,7 +34445,15 @@ function configCommand(program3) {
               parsedConfig = JSON.parse(n.config);
             } catch {
             }
-            await client.addNotification({ ...parsedConfig, name: n.name, type: parsedConfig.type || n.type });
+            const safeConfig = {};
+            for (const [k, v] of Object.entries(parsedConfig)) {
+              if (FORBIDDEN_NOTIFICATION_FIELDS.has(k) || k.startsWith("__")) {
+                if (!json2) console.warn(source_default.yellow(`\u26A0\uFE0F  Ignored forbidden notification field: ${k}`));
+              } else {
+                safeConfig[k] = v;
+              }
+            }
+            await client.addNotification({ ...safeConfig, name: n.name, type: safeConfig.type || n.type });
           }
         }
       }

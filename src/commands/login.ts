@@ -15,11 +15,14 @@ export function loginCommand(program: Command): void {
       "Authenticate with an Uptime Kuma instance and save the session token locally"
     )
     .option("--json", "Output as JSON ({ ok, data })")
+    .option("--username <username>", "Username (non-interactive)")
+    .option("--password <password>", "Password (non-interactive)")
     .addHelpText(
       "after",
       `
 ${chalk.dim("Examples:")}
   ${chalk.cyan("kuma login https://kuma.example.com")}
+  ${chalk.cyan("kuma login https://kuma.example.com --username admin --password secret")}
   ${chalk.cyan("kuma login https://kuma.example.com --json")}
 
 ${chalk.dim("Notes:")}
@@ -27,7 +30,7 @@ ${chalk.dim("Notes:")}
   Token location: run ${chalk.cyan("kuma status")} to see the config path.
 `
     )
-    .action(async (url: string, opts: { json?: boolean }) => {
+    .action(async (url: string, opts: { json?: boolean; username?: string; password?: string }) => {
       const json = isJsonMode(opts);
 
       try {
@@ -37,7 +40,6 @@ ${chalk.dim("Notes:")}
         // Fix #2: Warn when connecting over plain HTTP — credentials will be in cleartext
         if (!normalizedUrl.startsWith("https://")) {
           if (json) {
-            // In JSON mode, surface as a warning but don't block — caller decides
             console.log(JSON.stringify({
               warning: "Connecting over HTTP. Credentials will be transmitted in cleartext. Use HTTPS in production."
             }));
@@ -49,23 +51,24 @@ ${chalk.dim("Notes:")}
           }
         }
 
-        const answers = await prompt([
-          {
-            type: "input",
-            name: "username",
-            message: "Username:",
-          },
-          {
-            type: "password",
-            name: "password",
-            message: "Password:",
-          },
-        ]);
+        let username: string;
+        let password: string;
 
-        const { username, password } = answers as {
-          username: string;
-          password: string;
-        };
+        if (opts.username && opts.password) {
+          username = opts.username;
+          password = opts.password;
+        } else {
+          const answers = await prompt([
+            ...(!opts.username
+              ? [{ type: "input", name: "username", message: "Username:" }]
+              : []),
+            ...(!opts.password
+              ? [{ type: "password", name: "password", message: "Password:" }]
+              : []),
+          ]);
+          username = opts.username ?? answers.username;
+          password = opts.password ?? answers.password;
+        }
 
         const client = new KumaClient(normalizedUrl);
         await client.connect();
